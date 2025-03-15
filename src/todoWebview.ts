@@ -2,19 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getNonce, getBaseWebviewHtml } from './webviewUtils.js';
-
-interface TodoItem {
-    id: string;
-    title: string;
-    description: string;
-    category: string;
-    createdAt: string;
-    updatedAt: string;
-    completedAt?: string;
-    relatedFiles: string[];
-    possibleSolution?: string;
-    subTasks?: TodoItem[];
-}
+import { TodoItem, findTaskById } from './utils';
 
 export class TodoWebviewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'prakter.todoView';
@@ -45,10 +33,22 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
             async (message) => {
                 switch (message.command) {
                     case 'editTask':
-                        await vscode.commands.executeCommand('prakter.editTask', message.taskId);
+                        await vscode.commands.executeCommand('prakter.editTask', { todoItem: await findTaskById(message.taskId) });
                         break;
                     case 'viewTaskDetails':
                         await vscode.commands.executeCommand('prakter.viewTaskDetails', message.taskId);
+                        break;
+                    case 'markCompleted':
+                        const task = await findTaskById(message.taskId);
+                        if (task) {
+                            await vscode.commands.executeCommand('prakter.markTaskCompleted', { todoItem: task });
+                        }
+                        break;
+                    case 'deleteTask':
+                        const taskToDelete = await findTaskById(message.taskId);
+                        if (taskToDelete) {
+                            await vscode.commands.executeCommand('prakter.deleteTask', { todoItem: taskToDelete });
+                        }
                         break;
                 }
             }
@@ -99,8 +99,12 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
                             <td class="task-title" onclick="viewTaskDetails('${task.id}')">${task.title}</td>
                             <td>${task.completedAt ? '✅' : '🔄'}</td>
                             <td>${new Date(task.createdAt).toLocaleDateString()}</td>
-                            <td>
+                            <td class="actions">
+                                ${!task.completedAt ? `
+                                    <button class="icon-button" onclick="markCompleted('${task.id}')" title="Mark Completed">✅</button>
+                                ` : ''}
                                 <button class="icon-button" onclick="editTask('${task.id}')" title="Edit">✏️</button>
+                                <button class="icon-button" onclick="deleteTask('${task.id}')" title="Delete">🗑️</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -122,6 +126,16 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
                 function viewTaskDetails(taskId) {
                     vscode.postMessage({ command: 'viewTaskDetails', taskId });
                 }
+
+                function markCompleted(taskId) {
+                    vscode.postMessage({ command: 'markCompleted', taskId });
+                }
+
+                function deleteTask(taskId) {
+                    if (confirm('Are you sure you want to delete this task?')) {
+                        vscode.postMessage({ command: 'deleteTask', taskId });
+                    }
+                }
             </script>
             <style>
                 .task-table {
@@ -137,18 +151,26 @@ export class TodoWebviewProvider implements vscode.WebviewViewProvider {
                 }
                 .task-title {
                     cursor: pointer;
+                    color: var(--vscode-textLink-foreground);
                 }
                 .task-title:hover {
-                    color: var(--vscode-textLink-foreground);
+                    text-decoration: underline;
+                }
+                .actions {
+                    white-space: nowrap;
                 }
                 .icon-button {
                     background: none;
                     border: none;
                     cursor: pointer;
                     padding: 2px 6px;
+                    opacity: 0.7;
                 }
                 .icon-button:hover {
-                    background: var(--vscode-list-hoverBackground);
+                    opacity: 1;
+                }
+                tr:hover .icon-button {
+                    opacity: 1;
                 }
             </style>`;
 

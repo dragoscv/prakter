@@ -109,6 +109,16 @@
         "command": "prakter.viewTaskDetails",
         "title": "View Task Details",
         "category": "Prakter"
+      },
+      {
+        "command": "prakter.markTaskCompleted",
+        "title": "Mark as Completed",
+        "category": "Prakter"
+      },
+      {
+        "command": "prakter.editTask",
+        "title": "Edit Task",
+        "category": "Prakter"
       }
     ],
     "menus": {
@@ -127,6 +137,16 @@
           "command": "prakter.renameTask",
           "when": "view == prakter.todoView && viewItem == todo",
           "group": "1_modification"
+        },
+        {
+          "command": "prakter.markTaskCompleted",
+          "when": "view == prakter.todoView && viewItem == todo && !todoItem.completedAt",
+          "group": "1_modification"
+        },
+        {
+          "command": "prakter.editTask",
+          "when": "view == prakter.todoView && viewItem == todo",
+          "group": "1_modification"
         }
       ]
     },
@@ -141,7 +161,8 @@
             "Medium Necessarily",
             "Low Priority",
             "Futures",
-            "Ideas"
+            "Ideas",
+            "Completed"
           ],
           "description": "Categories for TODO items"
         },
@@ -149,6 +170,11 @@
           "type": "boolean",
           "default": true,
           "description": "Sync settings with VS Code Settings Sync"
+        },
+        "prakter.completionDelay": {
+          "type": "number",
+          "default": 7200000,
+          "description": "Delay in milliseconds before moving completed tasks to Completed category (default: 2 hours)"
         }
       }
     }

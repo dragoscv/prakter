@@ -8,23 +8,14 @@ import { TodoWebviewProvider } from './todoWebview.js';
 import { ChangelogWebviewProvider } from './changelogWebview.js';
 import { WelcomeViewProvider } from './welcomeView.js';
 import { CopilotIntegration } from './copilotIntegration.js';
+import { TodoItem, findTaskById } from './utils';
 
 // Declare providers at module level
 let todoProvider: TodoTreeProvider;
 let changelogProvider: ChangelogTreeProvider;
+let todoWebviewProvider: TodoWebviewProvider;
 
-interface TodoItem {
-	id: string;
-	title: string;
-	description: string;
-	category: string;
-	createdAt: string;
-	updatedAt: string;
-	completedAt?: string;
-	relatedFiles: string[];
-	possibleSolution?: string;
-	subTasks?: TodoItem[];
-}
+// Remove the TodoItem interface since it's now imported
 
 interface ChangelogItem {
 	version: string;
@@ -42,7 +33,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Register webview providers
 	const readmeWebviewProvider = new ReadmeWebviewProvider(context.extensionUri);
 	const welcomeViewProvider = new WelcomeViewProvider(context.extensionUri);
-	const todoWebviewProvider = new TodoWebviewProvider(context.extensionUri);
+	todoWebviewProvider = new TodoWebviewProvider(context.extensionUri);
 	const changelogWebviewProvider = new ChangelogWebviewProvider(context.extensionUri);
 
 	// Initialize providers
@@ -157,6 +148,20 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
+	let markCompleted = vscode.commands.registerCommand('prakter.markTaskCompleted', async (task: TodoTreeItem) => {
+		if (task.todoItem) {
+			await markTaskCompleted(task.todoItem);
+			todoProvider.refresh();
+			todoWebviewProvider.refresh(task.todoItem.category);
+		}
+	});
+
+	let editTaskCmd = vscode.commands.registerCommand('prakter.editTask', (task: TodoTreeItem) => {
+		if (task.todoItem) {
+			editTask(task.todoItem.id);
+		}
+	});
+
 	context.subscriptions.push(
 		createFiles,
 		createFilesWithCopilot,
@@ -167,7 +172,9 @@ export function activate(context: vscode.ExtensionContext) {
 		deleteTask,
 		renameTask,
 		viewTaskDetails,
-		viewTaskList
+		viewTaskList,
+		markCompleted,
+		editTaskCmd
 	);
 }
 
@@ -378,7 +385,7 @@ export class TodoTreeItem extends vscode.TreeItem {
 		super(
 			label,
 			(itemType === 'category' || (todoItem?.subTasks && todoItem.subTasks.length > 0))
-				? vscode.TreeItemCollapsibleState.Expanded
+				? vscode.TreeItemCollapsibleState.Collapsed
 				: vscode.TreeItemCollapsibleState.None
 		);
 
@@ -395,6 +402,7 @@ export class TodoTreeItem extends vscode.TreeItem {
 
 		// Add click handlers for categories and tasks
 		if (itemType === 'category') {
+			// Double click will still expand/collapse
 			this.command = {
 				command: 'prakter.viewTaskList',
 				title: 'View Tasks',
@@ -640,119 +648,161 @@ async function updateTaskTitle(task: TodoItem, newTitle: string): Promise<void> 
 	}
 }
 
-async function findTaskById(taskId: string): Promise<TodoItem | undefined> {
-	const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
-	const content = await fs.promises.readFile(todoPath, 'utf-8');
-	const todos: TodoItem[] = JSON.parse(content);
-	return todos.find(t => t.id === taskId);
-}
-
 function getTaskDetailsHtml(task: TodoItem): string {
 	return `<!DOCTYPE html>
-	<html>
-	<head>
-		<style>
-			body {
-				padding: 20px;
-				color: var(--vscode-foreground);
-				font-family: var(--vscode-font-family);
-			}
-			.task-details {
-				display: grid;
-				gap: 15px;
-			}
-			.field {
-				margin-bottom: 10px;
-			}
-			.field-label {
-				font-weight: bold;
-				color: var(--vscode-textPreformat-foreground);
-			}
-			.field-value {
-				margin-top: 5px;
-			}
-			.related-files {
-				margin-top: 10px;
-			}
-			.file-link {
-				color: var(--vscode-textLink-foreground);
-				text-decoration: none;
-				display: block;
-				margin: 5px 0;
-			}
-			.subtasks {
-				margin-top: 15px;
-			}
-			.subtask-item {
-				margin: 5px 0;
-				padding-left: 20px;
-			}
-		</style>
-	</head>
-	<body>
-		<div class="task-details">
-			<h2>${task.title}</h2>
-			
-			<div class="field">
-				<div class="field-label">Description:</div>
-				<div class="field-value">${task.description}</div>
-			</div>
+    <html>
+    <head>
+        <style>
+            body {
+                padding: 20px;
+                color: var(--vscode-foreground);
+                font-family: var(--vscode-font-family);
+            }
+            .task-details {
+                display: grid;
+                gap: 15px;
+            }
+            .header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .header-buttons {
+                display: flex;
+                gap: 10px;
+            }
+            .field {
+                margin-bottom: 10px;
+            }
+            .field-label {
+                font-weight: bold;
+                color: var(--vscode-textPreformat-foreground);
+            }
+            .field-value {
+                margin-top: 5px;
+            }
+            .related-files {
+                margin-top: 10px;
+            }
+            .file-link {
+                color: var(--vscode-textLink-foreground);
+                text-decoration: none;
+                display: block;
+                margin: 5px 0;
+            }
+            .subtasks {
+                margin-top: 15px;
+            }
+            .subtask-item {
+                margin: 5px 0;
+                padding-left: 20px;
+            }
+            button {
+                padding: 8px 16px;
+                border: none;
+                cursor: pointer;
+                background: var(--vscode-button-background);
+                color: var(--vscode-button-foreground);
+            }
+            button:hover {
+                background: var(--vscode-button-hoverBackground);
+            }
+            .secondary-button {
+                background: var(--vscode-button-secondaryBackground);
+                color: var(--vscode-button-secondaryForeground);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="task-details">
+            <div class="header">
+                <h2>${task.title}</h2>
+                <div class="header-buttons">
+                    ${!task.completedAt ? `
+                        <button onclick="markCompleted()">Mark Completed</button>
+                    ` : ''}
+                    <button onclick="editTask()">Edit Task</button>
+                    <button class="secondary-button" onclick="deleteTask()">Delete</button>
+                </div>
+            </div>
+            
+            <div class="field">
+                <div class="field-label">Description:</div>
+                <div class="field-value">${task.description}</div>
+            </div>
 
-			<div class="field">
-				<div class="field-label">Category:</div>
-				<div class="field-value">${task.category}</div>
-			</div>
+            <div class="field">
+                <div class="field-label">Category:</div>
+                <div class="field-value">${task.category}</div>
+            </div>
 
-			<div class="field">
-				<div class="field-label">Status:</div>
-				<div class="field-value">${task.completedAt ? 'Completed' : 'In Progress'}</div>
-			</div>
+            <div class="field">
+                <div class="field-label">Status:</div>
+                <div class="field-value">${task.completedAt ? 'Completed' : 'In Progress'}</div>
+            </div>
 
-			<div class="field">
-				<div class="field-label">Created:</div>
-				<div class="field-value">${new Date(task.createdAt).toLocaleString()}</div>
-			</div>
+            <div class="field">
+                <div class="field-label">Created:</div>
+                <div class="field-value">${new Date(task.createdAt).toLocaleString()}</div>
+            </div>
 
-			${task.completedAt ? `
-				<div class="field">
-					<div class="field-label">Completed:</div>
-					<div class="field-value">${new Date(task.completedAt).toLocaleString()}</div>
-				</div>
-			` : ''}
+            ${task.completedAt ? `
+                <div class="field">
+                    <div class="field-label">Completed:</div>
+                    <div class="field-value">${new Date(task.completedAt).toLocaleString()}</div>
+                </div>
+            ` : ''}
 
-			${task.possibleSolution ? `
-				<div class="field">
-					<div class="field-label">Possible Solution:</div>
-					<div class="field-value">${task.possibleSolution}</div>
-				</div>
-			` : ''}
+            ${task.possibleSolution ? `
+                <div class="field">
+                    <div class="field-label">Possible Solution:</div>
+                    <div class="field-value">${task.possibleSolution}</div>
+                </div>
+            ` : ''}
 
-			${task.relatedFiles.length > 0 ? `
-				<div class="field">
-					<div class="field-label">Related Files:</div>
-					<div class="field-value related-files">
-						${task.relatedFiles.map(file => `
-							<a class="file-link" href="#">${file}</a>
-						`).join('')}
-					</div>
-				</div>
-			` : ''}
+            ${task.relatedFiles.length > 0 ? `
+                <div class="field">
+                    <div class="field-label">Related Files:</div>
+                    <div class="field-value related-files">
+                        ${task.relatedFiles.map(file => `
+                            <a class="file-link" href="#">${file}</a>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
 
-			${task.subTasks && task.subTasks.length > 0 ? `
-				<div class="field">
-					<div class="field-label">Subtasks:</div>
-					<div class="field-value subtasks">
-						${task.subTasks.map(subtask => `
-							<div class="subtask-item">
-								• ${subtask.title} ${subtask.completedAt ? '✅' : ''}
-							</div>
-						`).join('')}
-					</div>
-				</div>
-			` : ''}
-		</div>
-	</body>
-	</html>`;
+            ${task.subTasks && task.subTasks.length > 0 ? `
+                <div class="field">
+                    <div class="field-label">Subtasks:</div>
+                    <div class="field-value subtasks">
+                        ${task.subTasks.map(subtask => `
+                            <div class="subtask-item">
+                                • ${subtask.title} ${subtask.completedAt ? '✅' : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+        </div>
+        <script>
+            const vscode = acquireVsCodeApi();
+            
+            function editTask() {
+                vscode.postMessage({ command: 'editTask', taskId: '${task.id}' });
+            }
+
+            function markCompleted() {
+                vscode.postMessage({ command: 'markCompleted', taskId: '${task.id}' });
+            }
+
+            function deleteTask() {
+                if (confirm('Are you sure you want to delete this task?')) {
+                    vscode.postMessage({ command: 'deleteTask', taskId: '${task.id}' });
+                }
+            }
+        </script>
+    </body>
+    </html>`;
 }
 
 async function addNewChangelogItem(): Promise<void> {
@@ -805,6 +855,188 @@ async function addNewChangelogItem(): Promise<void> {
 		vscode.window.showErrorMessage('Failed to add changelog item');
 		throw error;
 	}
+}
+
+async function markTaskCompleted(task: TodoItem): Promise<void> {
+	const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
+	const content = await fs.promises.readFile(todoPath, 'utf-8');
+	let todos: TodoItem[] = JSON.parse(content);
+
+	const existingTask = todos.find(t => t.id === task.id);
+	if (existingTask) {
+		existingTask.completedAt = new Date().toISOString();
+		existingTask.updatedAt = new Date().toISOString();
+		await fs.promises.writeFile(todoPath, JSON.stringify(todos, null, 2));
+
+		// Schedule move to completed after delay
+		const delay = vscode.workspace.getConfiguration('prakter').get<number>('completionDelay') || 7200000;
+		setTimeout(async () => {
+			await moveTaskToCompleted(existingTask);
+		}, delay);
+	}
+}
+
+async function moveTaskToCompleted(task: TodoItem): Promise<void> {
+	const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
+	const content = await fs.promises.readFile(todoPath, 'utf-8');
+	let todos: TodoItem[] = JSON.parse(content);
+
+	const existingTask = todos.find(t => t.id === task.id);
+	if (existingTask && existingTask.completedAt) {
+		existingTask.category = 'Completed';
+		existingTask.updatedAt = new Date().toISOString();
+		await fs.promises.writeFile(todoPath, JSON.stringify(todos, null, 2));
+		todoProvider.refresh();
+	}
+}
+
+async function editTask(taskId: string): Promise<void> {
+	const task = await findTaskById(taskId);
+	if (!task) {
+		return;
+	}
+
+	const panel = vscode.window.createWebviewPanel(
+		'taskEdit',
+		`Edit Task: ${task.title}`,
+		vscode.ViewColumn.One,
+		{
+			enableScripts: true,
+			retainContextWhenHidden: true
+		}
+	);
+
+	panel.webview.html = getTaskEditHtml(task);
+
+	panel.webview.onDidReceiveMessage(async (message) => {
+		switch (message.command) {
+			case 'saveTask':
+				await updateTask(message.task);
+				todoProvider.refresh();
+				todoWebviewProvider.refresh(message.task.category);
+				panel.dispose();
+				break;
+			case 'cancel':
+				panel.dispose();
+				break;
+		}
+	});
+}
+
+async function updateTask(updatedTask: TodoItem): Promise<void> {
+	const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
+	const content = await fs.promises.readFile(todoPath, 'utf-8');
+	let todos: TodoItem[] = JSON.parse(content);
+
+	const index = todos.findIndex(t => t.id === updatedTask.id);
+	if (index !== -1) {
+		todos[index] = {
+			...updatedTask,
+			updatedAt: new Date().toISOString()
+		};
+		await fs.promises.writeFile(todoPath, JSON.stringify(todos, null, 2));
+	}
+}
+
+function getTaskEditHtml(task: TodoItem): string {
+	const categories = vscode.workspace.getConfiguration('prakter').get<string[]>('todoCategories') || [];
+
+	return `<!DOCTYPE html>
+	<html>
+	<head>
+		<style>
+			body {
+				padding: 20px;
+				color: var(--vscode-foreground);
+				font-family: var(--vscode-font-family);
+			}
+			.form-group {
+				margin-bottom: 15px;
+			}
+			label {
+				display: block;
+				margin-bottom: 5px;
+				color: var(--vscode-textPreformat-foreground);
+			}
+			input, textarea, select {
+				width: 100%;
+				padding: 8px;
+				border: 1px solid var(--vscode-input-border);
+				background: var(--vscode-input-background);
+				color: var(--vscode-input-foreground);
+			}
+			.button-group {
+				margin-top: 20px;
+				display: flex;
+				gap: 10px;
+				justify-content: flex-end;
+			}
+			button {
+				padding: 8px 16px;
+				border: none;
+				cursor: pointer;
+			}
+			.save-button {
+				background: var(--vscode-button-background);
+				color: var(--vscode-button-foreground);
+			}
+			.cancel-button {
+				background: var(--vscode-button-secondaryBackground);
+				color: var(--vscode-button-secondaryForeground);
+			}
+		</style>
+	</head>
+	<body>
+		<form id="taskForm">
+			<div class="form-group">
+				<label for="title">Title:</label>
+				<input type="text" id="title" value="${task.title}" required>
+			</div>
+			<div class="form-group">
+				<label for="description">Description:</label>
+				<textarea id="description" rows="4" required>${task.description}</textarea>
+			</div>
+			<div class="form-group">
+				<label for="category">Category:</label>
+				<select id="category">
+					${categories.map(cat => `
+						<option value="${cat}" ${cat === task.category ? 'selected' : ''}>
+							${cat}
+						</option>
+					`).join('')}
+				</select>
+			</div>
+			<div class="form-group">
+				<label for="solution">Possible Solution:</label>
+				<textarea id="solution" rows="4">${task.possibleSolution || ''}</textarea>
+			</div>
+			<div class="button-group">
+				<button type="button" class="cancel-button" onclick="cancel()">Cancel</button>
+				<button type="submit" class="save-button">Save</button>
+			</div>
+		</form>
+		<script>
+			const vscode = acquireVsCodeApi();
+			const taskForm = document.getElementById('taskForm');
+			
+			taskForm.addEventListener('submit', (e) => {
+				e.preventDefault();
+				const updatedTask = {
+					...${JSON.stringify(task)},
+					title: document.getElementById('title').value,
+					description: document.getElementById('description').value,
+					category: document.getElementById('category').value,
+					possibleSolution: document.getElementById('solution').value
+				};
+				vscode.postMessage({ command: 'saveTask', task: updatedTask });
+			});
+
+			function cancel() {
+				vscode.postMessage({ command: 'cancel' });
+			}
+		</script>
+	</body>
+	</html>`;
 }
 
 // This method is called when your extension is deactivated

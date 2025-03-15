@@ -2,8 +2,9 @@
   "name": "prakter",
   "displayName": "prakter",
   "description": "Easily manage the tasks of the project",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "dragoscv",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.98.0"
   },
@@ -23,7 +24,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/dragoscv/JustBlack2-VSCodeTheme"
+    "url": "https://github.com/dragoscv/prakter"
   },
   "main": "./dist/extension.js",
   "contributes": {
@@ -39,17 +40,26 @@
     "views": {
       "prakter-sidebar": [
         {
-          "type": "webview",
-          "id": "prakter.readmePreview",
-          "name": "README"
+          "id": "prakter.todoView",
+          "name": "TODO",
+          "when": "workbenchState != empty"
         },
         {
           "id": "prakter.changelogView",
-          "name": "CHANGELOG"
+          "name": "CHANGELOG",
+          "when": "workbenchState != empty"
         },
         {
-          "id": "prakter.todoView",
-          "name": "TODO"
+          "type": "webview",
+          "id": "prakter.readmePreview",
+          "name": "README",
+          "when": "workbenchState != empty"
+        },
+        {
+          "type": "webview",
+          "id": "prakter.welcomeView",
+          "name": "Welcome",
+          "when": "workbenchState == empty"
         }
       ]
     },
@@ -79,8 +89,47 @@
         "title": "Refresh View",
         "category": "Prakter",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "prakter.createTaskInCategory",
+        "title": "Create Task",
+        "category": "Prakter"
+      },
+      {
+        "command": "prakter.deleteTask",
+        "title": "Delete Task",
+        "category": "Prakter"
+      },
+      {
+        "command": "prakter.renameTask",
+        "title": "Rename Task",
+        "category": "Prakter"
+      },
+      {
+        "command": "prakter.viewTaskDetails",
+        "title": "View Task Details",
+        "category": "Prakter"
       }
     ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "prakter.createTaskInCategory",
+          "when": "view == prakter.todoView && viewItem == category",
+          "group": "inline"
+        },
+        {
+          "command": "prakter.deleteTask",
+          "when": "view == prakter.todoView && viewItem == todo",
+          "group": "1_modification"
+        },
+        {
+          "command": "prakter.renameTask",
+          "when": "view == prakter.todoView && viewItem == todo",
+          "group": "1_modification"
+        }
+      ]
+    },
     "configuration": {
       "title": "Prakter",
       "properties": {
@@ -116,7 +165,8 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "node --force-node-api-uncaught-exceptions-policy=true ./out/test/runTest.js",
+    "mocha": "mocha -r ts-node/register \"src/test/**/*.test.ts\""
   },
   "devDependencies": {
     "@types/marked": "^4.3.0",
@@ -130,9 +180,13 @@
     "@vscode/test-electron": "^2.4.1",
     "esbuild": "^0.25.0",
     "eslint": "^9.21.0",
+    "lru-cache": "^7.18.3",
     "marked": "^4.3.0",
+    "mocha": "^10.3.0",
     "npm-run-all": "^4.1.5",
     "sinon": "^19.0.2",
+    "ts-node": "^10.9.2",
     "typescript": "^5.7.3"
-  }
+  },
+  "type": "commonjs"
 }

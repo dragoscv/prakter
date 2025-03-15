@@ -1,4 +1,5 @@
-const esbuild = require("esbuild");
+const esbuild = require('esbuild');
+const process = require('process');
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -30,6 +31,7 @@ async function main() {
 		],
 		bundle: true,
 		format: 'cjs',
+		target: ['node16'],
 		minify: production,
 		sourcemap: !production,
 		sourcesContent: false,
@@ -37,11 +39,9 @@ async function main() {
 		outfile: 'dist/extension.js',
 		external: ['vscode'],
 		logLevel: 'silent',
-		plugins: [
-			/* add to the end of plugins array */
-			esbuildProblemMatcherPlugin,
-		],
+		plugins: [esbuildProblemMatcherPlugin],
 	});
+
 	if (watch) {
 		await ctx.watch();
 	} else {

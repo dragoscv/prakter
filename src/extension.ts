@@ -1,11 +1,17 @@
 // The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { marked } from 'marked';
-import { ReadmeWebviewProvider } from './readmeWebview';
-import { CopilotIntegration } from './copilotIntegration';
+import { ReadmeWebviewProvider } from './readmeWebview.js';
+import { TodoWebviewProvider } from './todoWebview.js';
+import { ChangelogWebviewProvider } from './changelogWebview.js';
+import { WelcomeViewProvider } from './welcomeView.js';
+import { CopilotIntegration } from './copilotIntegration.js';
+
+// Declare providers at module level
+let todoProvider: TodoTreeProvider;
+let changelogProvider: ChangelogTreeProvider;
 
 interface TodoItem {
 	id: string;
@@ -33,24 +39,31 @@ interface ChangelogItem {
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-	// Register webview provider for README preview
+	// Register webview providers
 	const readmeWebviewProvider = new ReadmeWebviewProvider(context.extensionUri);
+	const welcomeViewProvider = new WelcomeViewProvider(context.extensionUri);
+	const todoWebviewProvider = new TodoWebviewProvider(context.extensionUri);
+	const changelogWebviewProvider = new ChangelogWebviewProvider(context.extensionUri);
+
+	// Initialize providers
+	todoProvider = new TodoTreeProvider(todoWebviewProvider);
+	changelogProvider = new ChangelogTreeProvider(changelogWebviewProvider);
+
 	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider(ReadmeWebviewProvider.viewType, readmeWebviewProvider)
+		vscode.window.registerWebviewViewProvider(ReadmeWebviewProvider.viewType, readmeWebviewProvider),
+		vscode.window.registerWebviewViewProvider(WelcomeViewProvider.viewType, welcomeViewProvider),
+		vscode.window.registerWebviewViewProvider(TodoWebviewProvider.viewType, todoWebviewProvider),
+		vscode.window.registerWebviewViewProvider(ChangelogWebviewProvider.viewType, changelogWebviewProvider)
 	);
 
-	// Create tree data providers
-	const changelogProvider = new ChangelogTreeProvider();
-	const todoProvider = new TodoTreeProvider();
-
-	// Register views
-	vscode.window.createTreeView('prakter.changelogView', {
-		treeDataProvider: changelogProvider,
+	// Register views with the initialized providers
+	vscode.window.createTreeView('prakter.todoView', {
+		treeDataProvider: todoProvider,
 		showCollapseAll: true
 	});
 
-	vscode.window.createTreeView('prakter.todoView', {
-		treeDataProvider: todoProvider,
+	vscode.window.createTreeView('prakter.changelogView', {
+		treeDataProvider: changelogProvider,
 		showCollapseAll: true
 	});
 
@@ -79,12 +92,82 @@ export function activate(context: vscode.ExtensionContext) {
 		todoProvider.refresh();
 	});
 
+	// Register task management commands
+	let createTaskInCategory = vscode.commands.registerCommand('prakter.createTaskInCategory', async (category: TodoTreeItem) => {
+		await addNewTodoItem(category.label);
+		todoProvider.refresh();
+		todoWebviewProvider.refresh(category.label);
+	});
+
+	let deleteTask = vscode.commands.registerCommand('prakter.deleteTask', async (task: TodoTreeItem) => {
+		if (!task.todoItem) {
+			return;
+		}
+
+		const answer = await vscode.window.showWarningMessage(
+			`Are you sure you want to delete task "${task.todoItem.title}"?`,
+			'Yes',
+			'No'
+		);
+
+		if (answer === 'Yes') {
+			await deleteExistingTask(task.todoItem);
+			todoProvider.refresh();
+			todoWebviewProvider.refresh(task.todoItem.category);
+		}
+	});
+
+	let renameTask = vscode.commands.registerCommand('prakter.renameTask', async (task: TodoTreeItem) => {
+		if (!task.todoItem) {
+			return;
+		}
+
+		const newTitle = await vscode.window.showInputBox({
+			prompt: 'Enter new task title',
+			value: task.todoItem.title
+		});
+
+		if (newTitle) {
+			await updateTaskTitle(task.todoItem, newTitle);
+			todoProvider.refresh();
+			todoWebviewProvider.refresh(task.todoItem.category);
+		}
+	});
+
+	let viewTaskDetails = vscode.commands.registerCommand('prakter.viewTaskDetails', async (taskId: string) => {
+		const task = await findTaskById(taskId);
+		if (task) {
+			const panel = vscode.window.createWebviewPanel(
+				'taskDetails',
+				`Task: ${task.title}`,
+				vscode.ViewColumn.One,
+				{
+					enableScripts: true,
+					retainContextWhenHidden: true
+				}
+			);
+
+			panel.webview.html = getTaskDetailsHtml(task);
+		}
+	});
+
+	let viewTaskList = vscode.commands.registerCommand('prakter.viewTaskList', (category: TodoTreeItem) => {
+		if (category.itemType === 'category') {
+			todoWebviewProvider.refresh(category.label);
+		}
+	});
+
 	context.subscriptions.push(
 		createFiles,
 		createFilesWithCopilot,
 		addTodoItem,
 		addChangelogItem,
-		refreshView
+		refreshView,
+		createTaskInCategory,
+		deleteTask,
+		renameTask,
+		viewTaskDetails,
+		viewTaskList
 	);
 }
 
@@ -101,26 +184,37 @@ class ReadmeTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 	}
 
 	async getChildren(): Promise<vscode.TreeItem[]> {
-		const workspaceFolders = vscode.workspace.workspaceFolders;
-		if (!workspaceFolders) {
-			return [];
-		}
+		try {
+			const workspaceFolders = vscode.workspace.workspaceFolders;
+			if (!workspaceFolders) {
+				return [];
+			}
 
-		const readmePath = path.join(workspaceFolders[0].uri.fsPath, 'README.md');
-		if (!fs.existsSync(readmePath)) {
-			return [new vscode.TreeItem('README.md not found. Create one?')];
-		}
+			const readmePath = path.join(workspaceFolders[0].uri.fsPath, 'README.md');
+			if (!fs.existsSync(readmePath)) {
+				const item = new vscode.TreeItem('README.md not found. Create one?');
+				item.command = {
+					command: 'prakter.createFiles',
+					title: 'Create README.md'
+				};
+				return [item];
+			}
 
-		const content = fs.readFileSync(readmePath, 'utf-8');
-		const html = marked(content);
-		// Create a tree item that will open the README in a webview when clicked
-		const item = new vscode.TreeItem('README Preview');
-		item.command = {
-			command: 'vscode.previewHtml',
-			title: 'Preview README',
-			arguments: [vscode.Uri.file(readmePath)]
-		};
-		return [item];
+			const content = await fs.promises.readFile(readmePath, 'utf-8');
+			const html = marked(content);
+			const item = new vscode.TreeItem('README Preview');
+			item.command = {
+				command: 'markdown.showPreview',
+				title: 'Preview README',
+				arguments: [vscode.Uri.file(readmePath)]
+			};
+			return [item];
+		} catch (error) {
+			console.error('Error in ReadmeTreeProvider:', error);
+			const errorItem = new vscode.TreeItem('Error reading README.md');
+			errorItem.tooltip = error instanceof Error ? error.message : 'Unknown error';
+			return [errorItem];
+		}
 	}
 }
 
@@ -128,8 +222,11 @@ class ChangelogTreeProvider implements vscode.TreeDataProvider<ChangelogTreeItem
 	private _onDidChangeTreeData = new vscode.EventEmitter<ChangelogTreeItem | undefined>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+	constructor(private webviewProvider: ChangelogWebviewProvider) { }
+
 	refresh(): void {
 		this._onDidChangeTreeData.fire(undefined);
+		this.webviewProvider.refresh();
 	}
 
 	getTreeItem(element: ChangelogTreeItem): vscode.TreeItem {
@@ -143,7 +240,12 @@ class ChangelogTreeProvider implements vscode.TreeDataProvider<ChangelogTreeItem
 
 		const changelogPath = path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, 'CHANGELOG.json');
 		if (!fs.existsSync(changelogPath)) {
-			return [new ChangelogTreeItem('CHANGELOG.json not found. Create one?', '', [], 'message')];
+			const item = new ChangelogTreeItem('CHANGELOG.json not found. Create one?', '', [], 'message');
+			item.command = {
+				command: 'prakter.createFiles',
+				title: 'Create CHANGELOG.json'
+			};
+			return [item];
 		}
 
 		try {
@@ -215,8 +317,11 @@ export class TodoTreeProvider implements vscode.TreeDataProvider<TodoTreeItem> {
 	private _onDidChangeTreeData = new vscode.EventEmitter<TodoTreeItem | undefined>();
 	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
+	constructor(private webviewProvider: TodoWebviewProvider) { }
+
 	refresh(): void {
 		this._onDidChangeTreeData.fire(undefined);
+		this.webviewProvider.refresh();
 	}
 
 	getTreeItem(element: TodoTreeItem): vscode.TreeItem {
@@ -230,7 +335,12 @@ export class TodoTreeProvider implements vscode.TreeDataProvider<TodoTreeItem> {
 
 		const todoPath = path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, 'TODO.json');
 		if (!fs.existsSync(todoPath)) {
-			return [new TodoTreeItem('TODO.json not found. Create one?', 'message')];
+			const item = new TodoTreeItem('TODO.json not found. Create one?', 'message');
+			item.command = {
+				command: 'prakter.createFiles',
+				title: 'Create TODO.json'
+			};
+			return [item];
 		}
 
 		try {
@@ -281,6 +391,21 @@ export class TodoTreeItem extends vscode.TreeItem {
 			if (todoItem.completedAt) {
 				this.description += ` | Completed: ${new Date(todoItem.completedAt).toLocaleDateString()}`;
 			}
+		}
+
+		// Add click handlers for categories and tasks
+		if (itemType === 'category') {
+			this.command = {
+				command: 'prakter.viewTaskList',
+				title: 'View Tasks',
+				arguments: [this]
+			};
+		} else if (itemType === 'todo') {
+			this.command = {
+				command: 'prakter.viewTaskDetails',
+				title: 'View Task Details',
+				arguments: [todoItem?.id]
+			};
 		}
 	}
 
@@ -345,25 +470,8 @@ async function createProjectFiles(useCopilot: boolean): Promise<void> {
 }
 
 async function createAllFiles(files: Record<string, string>, useCopilot: boolean): Promise<void> {
-	for (const [type, filePath] of Object.entries(files)) {
-		let content = '';
-
-		if (useCopilot) {
-			// Here you would integrate with GitHub Copilot to generate content
-			content = await generateContentWithCopilot(type);
-		} else {
-			content = getDefaultContent(type);
-		}
-
-		fs.writeFileSync(filePath, content);
-	}
-
-	vscode.window.showInformationMessage('Project files created successfully');
-}
-
-async function createMissingFiles(files: Record<string, string>, useCopilot: boolean): Promise<void> {
-	for (const [type, filePath] of Object.entries(files)) {
-		if (!fs.existsSync(filePath)) {
+	try {
+		for (const [type, filePath] of Object.entries(files)) {
 			let content = '';
 
 			if (useCopilot) {
@@ -372,11 +480,37 @@ async function createMissingFiles(files: Record<string, string>, useCopilot: boo
 				content = getDefaultContent(type);
 			}
 
-			fs.writeFileSync(filePath, content);
+			await fs.promises.writeFile(filePath, content);
 		}
-	}
 
-	vscode.window.showInformationMessage('Missing files created successfully');
+		await vscode.window.showInformationMessage('Project files created successfully');
+	} catch (error) {
+		console.error('Error creating files:', error);
+		throw error;
+	}
+}
+
+async function createMissingFiles(files: Record<string, string>, useCopilot: boolean): Promise<void> {
+	try {
+		for (const [type, filePath] of Object.entries(files)) {
+			if (!fs.existsSync(filePath)) {
+				let content = '';
+
+				if (useCopilot) {
+					content = await generateContentWithCopilot(type);
+				} else {
+					content = getDefaultContent(type);
+				}
+
+				await fs.promises.writeFile(filePath, content);
+			}
+		}
+
+		await vscode.window.showInformationMessage('Missing files created successfully');
+	} catch (error) {
+		console.error('Error creating missing files:', error);
+		throw error;
+	}
 }
 
 function getDefaultContent(type: string): string {
@@ -432,90 +566,245 @@ async function generateContentWithCopilot(type: string): Promise<string> {
 	return result;
 }
 
-async function addNewTodoItem(): Promise<void> {
-	const title = await vscode.window.showInputBox({ prompt: 'Enter task title' });
-	if (!title) {
-		return;
+async function addNewTodoItem(selectedCategory?: string): Promise<void> {
+	try {
+		const title = await vscode.window.showInputBox({ prompt: 'Enter task title' });
+		if (!title) {
+			return;
+		}
+
+		const description = await vscode.window.showInputBox({ prompt: 'Enter task description' });
+		if (!description) {
+			return;
+		}
+
+		let category = selectedCategory;
+		if (!category) {
+			const categories = vscode.workspace.getConfiguration('prakter').get<string[]>('todoCategories') || [];
+			const categoryItem = await vscode.window.showQuickPick(
+				categories.map(c => ({ label: c })),
+				{ placeHolder: 'Select category' }
+			);
+			if (!categoryItem) {
+				return;
+			}
+			category = categoryItem.label;
+		}
+
+		const newItem: TodoItem = {
+			id: Date.now().toString(),
+			title,
+			description,
+			category,
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+			relatedFiles: []
+		};
+
+		const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
+		let todos: TodoItem[] = [];
+
+		if (fs.existsSync(todoPath)) {
+			const content = await fs.promises.readFile(todoPath, 'utf-8');
+			todos = JSON.parse(content);
+		}
+
+		todos.push(newItem);
+		await fs.promises.writeFile(todoPath, JSON.stringify(todos, null, 2));
+	} catch (error) {
+		console.error('Error adding TODO item:', error);
+		vscode.window.showErrorMessage('Failed to add TODO item');
+		throw error;
 	}
+}
 
-	const description = await vscode.window.showInputBox({ prompt: 'Enter task description' });
-	if (!description) {
-		return;
-	}
-
-	const categories = vscode.workspace.getConfiguration('prakter').get<string[]>('todoCategories') || [];
-	const categoryItem = await vscode.window.showQuickPick(
-		categories.map(c => ({ label: c })),
-		{ placeHolder: 'Select category' }
-	);
-	if (!categoryItem) {
-		return;
-	}
-
-	const newItem: TodoItem = {
-		id: Date.now().toString(),
-		title,
-		description,
-		category: categoryItem.label,
-		createdAt: new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-		relatedFiles: []
-	};
-
+async function deleteExistingTask(task: TodoItem): Promise<void> {
 	const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
-	let todos: TodoItem[] = [];
+	const content = await fs.promises.readFile(todoPath, 'utf-8');
+	let todos: TodoItem[] = JSON.parse(content);
 
-	if (fs.existsSync(todoPath)) {
-		todos = JSON.parse(fs.readFileSync(todoPath, 'utf-8'));
+	todos = todos.filter(t => t.id !== task.id);
+	await fs.promises.writeFile(todoPath, JSON.stringify(todos, null, 2));
+}
+
+async function updateTaskTitle(task: TodoItem, newTitle: string): Promise<void> {
+	const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
+	const content = await fs.promises.readFile(todoPath, 'utf-8');
+	let todos: TodoItem[] = JSON.parse(content);
+
+	const existingTask = todos.find(t => t.id === task.id);
+	if (existingTask) {
+		existingTask.title = newTitle;
+		existingTask.updatedAt = new Date().toISOString();
+		await fs.promises.writeFile(todoPath, JSON.stringify(todos, null, 2));
 	}
+}
 
-	todos.push(newItem);
-	fs.writeFileSync(todoPath, JSON.stringify(todos, null, 2));
+async function findTaskById(taskId: string): Promise<TodoItem | undefined> {
+	const todoPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'TODO.json');
+	const content = await fs.promises.readFile(todoPath, 'utf-8');
+	const todos: TodoItem[] = JSON.parse(content);
+	return todos.find(t => t.id === taskId);
+}
+
+function getTaskDetailsHtml(task: TodoItem): string {
+	return `<!DOCTYPE html>
+	<html>
+	<head>
+		<style>
+			body {
+				padding: 20px;
+				color: var(--vscode-foreground);
+				font-family: var(--vscode-font-family);
+			}
+			.task-details {
+				display: grid;
+				gap: 15px;
+			}
+			.field {
+				margin-bottom: 10px;
+			}
+			.field-label {
+				font-weight: bold;
+				color: var(--vscode-textPreformat-foreground);
+			}
+			.field-value {
+				margin-top: 5px;
+			}
+			.related-files {
+				margin-top: 10px;
+			}
+			.file-link {
+				color: var(--vscode-textLink-foreground);
+				text-decoration: none;
+				display: block;
+				margin: 5px 0;
+			}
+			.subtasks {
+				margin-top: 15px;
+			}
+			.subtask-item {
+				margin: 5px 0;
+				padding-left: 20px;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="task-details">
+			<h2>${task.title}</h2>
+			
+			<div class="field">
+				<div class="field-label">Description:</div>
+				<div class="field-value">${task.description}</div>
+			</div>
+
+			<div class="field">
+				<div class="field-label">Category:</div>
+				<div class="field-value">${task.category}</div>
+			</div>
+
+			<div class="field">
+				<div class="field-label">Status:</div>
+				<div class="field-value">${task.completedAt ? 'Completed' : 'In Progress'}</div>
+			</div>
+
+			<div class="field">
+				<div class="field-label">Created:</div>
+				<div class="field-value">${new Date(task.createdAt).toLocaleString()}</div>
+			</div>
+
+			${task.completedAt ? `
+				<div class="field">
+					<div class="field-label">Completed:</div>
+					<div class="field-value">${new Date(task.completedAt).toLocaleString()}</div>
+				</div>
+			` : ''}
+
+			${task.possibleSolution ? `
+				<div class="field">
+					<div class="field-label">Possible Solution:</div>
+					<div class="field-value">${task.possibleSolution}</div>
+				</div>
+			` : ''}
+
+			${task.relatedFiles.length > 0 ? `
+				<div class="field">
+					<div class="field-label">Related Files:</div>
+					<div class="field-value related-files">
+						${task.relatedFiles.map(file => `
+							<a class="file-link" href="#">${file}</a>
+						`).join('')}
+					</div>
+				</div>
+			` : ''}
+
+			${task.subTasks && task.subTasks.length > 0 ? `
+				<div class="field">
+					<div class="field-label">Subtasks:</div>
+					<div class="field-value subtasks">
+						${task.subTasks.map(subtask => `
+							<div class="subtask-item">
+								• ${subtask.title} ${subtask.completedAt ? '✅' : ''}
+							</div>
+						`).join('')}
+					</div>
+				</div>
+			` : ''}
+		</div>
+	</body>
+	</html>`;
 }
 
 async function addNewChangelogItem(): Promise<void> {
-	const version = await vscode.window.showInputBox({ prompt: 'Enter version number' });
-	if (!version) {
-		return;
+	try {
+		const version = await vscode.window.showInputBox({ prompt: 'Enter version number' });
+		if (!version) {
+			return;
+		}
+
+		const typeItem = await vscode.window.showQuickPick(
+			['feature', 'fix', 'chore'].map(t => ({ label: t })),
+			{ placeHolder: 'Select change type' }
+		);
+		if (!typeItem) {
+			return;
+		}
+
+		const description = await vscode.window.showInputBox({ prompt: 'Enter change description' });
+		if (!description) {
+			return;
+		}
+
+		const newChange = {
+			type: typeItem.label,
+			description
+		};
+
+		const changelogPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'CHANGELOG.json');
+		let changelog: ChangelogItem[] = [];
+
+		if (fs.existsSync(changelogPath)) {
+			const content = await fs.promises.readFile(changelogPath, 'utf-8');
+			changelog = JSON.parse(content);
+		}
+
+		const existingVersion = changelog.find(item => item.version === version);
+		if (existingVersion) {
+			existingVersion.changes.push(newChange);
+		} else {
+			changelog.push({
+				version,
+				date: new Date().toISOString().split('T')[0],
+				changes: [newChange]
+			});
+		}
+
+		await fs.promises.writeFile(changelogPath, JSON.stringify(changelog, null, 2));
+	} catch (error) {
+		console.error('Error adding changelog item:', error);
+		vscode.window.showErrorMessage('Failed to add changelog item');
+		throw error;
 	}
-
-	const typeItem = await vscode.window.showQuickPick(
-		['feature', 'fix', 'chore'].map(t => ({ label: t })),
-		{ placeHolder: 'Select change type' }
-	);
-	if (!typeItem) {
-		return;
-	}
-
-	const description = await vscode.window.showInputBox({ prompt: 'Enter change description' });
-	if (!description) {
-		return;
-	}
-
-	const newChange = {
-		type: typeItem.label,
-		description
-	};
-
-	const changelogPath = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'CHANGELOG.json');
-	let changelog: ChangelogItem[] = [];
-
-	if (fs.existsSync(changelogPath)) {
-		changelog = JSON.parse(fs.readFileSync(changelogPath, 'utf-8'));
-	}
-
-	const existingVersion = changelog.find(item => item.version === version);
-	if (existingVersion) {
-		existingVersion.changes.push(newChange);
-	} else {
-		changelog.push({
-			version,
-			date: new Date().toISOString().split('T')[0],
-			changes: [newChange]
-		});
-	}
-
-	fs.writeFileSync(changelogPath, JSON.stringify(changelog, null, 2));
 }
 
 // This method is called when your extension is deactivated
